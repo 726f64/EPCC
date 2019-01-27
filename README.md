@@ -1,6 +1,6 @@
 # EPCC
 
-![alt text](https://github.com/726f64/EPCC/blob/masterEPCC_Logo.jpg)
+![alt text](https://github.com/726f64/EPCC/blob/master/EPCC_Logo.jpg)
 
 My Element14 Elderly Person in the Community Care Project. This uses the Arduino MKR1300 LoraWAN boards provided by Element14. 
 
