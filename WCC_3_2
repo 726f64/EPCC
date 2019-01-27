@@ -1,0 +1,256 @@
+
+
+/***************************************************************************************** 
+  EPCC - Elderly Person in the Community Care System
+  for Element14 MKR WAN 1300 Smarter World Challenge
+  Warden Control Centre - Main Unit
+  by Rod / 14rhb
+  December 2018
+  v3.2
+***************************************************************************************** */  
+
+#include <SPI.h>  
+#include <LoRa.h>  
+#include <Console.h>
+#include <RTCZero.h>
+
+String inputString;
+int incomingByte;
+
+long previousMillis = 0;
+long interval = 10000;
+RTCZero rtc;
+String minutes;
+String hours;
+String seconds;
+String temp;
+
+void setup() {  
+
+  Serial.begin(115200);  
+  delay(1000);  
+  Serial.println("EPCC Warden Control Centre Unit v3.2");
+  Serial.println("for Element14 Community Project");
+  Serial.println("December 2018");
+  Serial.println("by Rod 14rhb");
+ 
+  if (!LoRa.begin(868E6)) {  
+    Serial.println("ERROR: LoRa service failed to start");  
+    while (1);  
+  } 
+  rtc.begin(); 
+  rtc.setHours(0);
+  rtc.setMinutes(0);
+  rtc.setSeconds(0);
+}  
+void loop() { 
+  
+  int packetSize; 
+  char rxString[50];
+  int pos=0;
+  boolean finished;
+  String strInput; 
+  String strTemp;
+
+  String Hours;
+  String Minutes;
+  String Seconds;
+
+  String Year;
+  String Month;
+  String Day;
+
+
+  
+  //has a LoRa packet been received?  
+  packetSize = LoRa.parsePacket(); 
+  if (packetSize) {  
+    Serial.println();  
+    Serial.print("Rx packet: ");    
+    while (LoRa.available()) {  
+      char incoming = (char) LoRa.read();   
+      rxString[pos]=incoming;
+      pos++;
+    } 
+    //Print the received packets from all users directly to the console
+    Serial.println(rxString);
+
+    //Automatically interpret each LoRa packet into better human readable text output?
+    //Flag up emergency and activate the MKR RELAY BOARD - SOS, minimal or over temperatures, ASSIST call, lack of movement etc
+    
+
+    //SQL database of users? How add new users? Users should have a name not just an ID !
+    
+  }
+
+
+  //If console input...read it all until /n
+  if (Serial.available()>0){
+    finished=false;
+    strInput="";
+    strTemp="";
+    
+    //Serial.println("Serial is available to read");    
+    while (!finished){
+      incomingByte=Serial.read();
+      //Serial.println(incomingByte, DEC);
+      if (incomingByte==10) {
+        finished=true;
+        //Serial.println("Finished read");
+      }
+      else {
+        strInput.concat(char(incomingByte));
+      }
+    } 
+    //Serial.print("Read value was:"); Serial.println(strInput);
+
+
+    //Process it !
+    String strRespond = strInput.substring(0,1);
+    if (strRespond=="Q"){
+      String strID = strInput.substring(1,6);
+      Serial.flush();
+      Serial.print(">>>> Respond to user_id:"); Serial.println(strID); 
+      Serial.println(">>>> Press (a) to acknowledge ASSIST call");
+      Serial.println(">>>> Press (A) to clear ASSIST call");
+      Serial.println(">>>> Press (s) to acknowledge SOS call");
+      Serial.println(">>>> Press (S) to clear SOS call");
+      Serial.println(">>>> Press (x) to cancel. User calls remain uncleared."); 
+
+      while (!Serial.available()){   
+      }
+      
+      incomingByte=Serial.read();
+      //Serial.print("Byte is:"); Serial.println(incomingByte);
+      char myByte=(char)incomingByte;
+      //Serial.print("Byte is:"); Serial.println(myByte);
+      LoRa.flush();
+      LoRa.beginPacket();
+      LoRa.print(strID);
+      switch(myByte){
+        case 'a':
+          Serial.print("Acknowledged ASSIST call from "); Serial.println(strID);
+          LoRa.print('a');
+          break;
+          
+        case 'A':
+          Serial.print("Cleared ASSIST call from "); Serial.println(strID);
+          LoRa.print('A');
+          break;
+          
+        case 's':
+          Serial.print("Acknowledged SOS call from "); Serial.println(strID);
+          LoRa.print('s');
+          break;
+          
+        case 'S':
+          Serial.print("Cleared SOS call from "); Serial.println(strID);
+          LoRa.print('S');
+          break;
+          
+        default:
+          Serial.print("Returned, nothing acknowledged."); Serial.println(strID);
+          LoRa.print('x');
+          break;        
+      }
+      LoRa.endPacket();
+      LoRa.flush();
+
+           LoRa.beginPacket();
+           LoRa.print("TEST");
+           LoRa.endPacket();
+    }
+    
+    else if (strRespond=="T"){
+        //Set WCC Time
+        String strTime = strInput.substring(1,7);
+        Serial.println(strTime);
+        String strHours="";
+        String strMinutes="";
+        String strSeconds="";
+        strHours = strInput.substring(1,3);
+        strMinutes = strInput.substring(3,5);
+        strSeconds = strInput.substring(5,7);
+        Serial.print("Values to be changed to:"); Serial.print(strHours); Serial.print(strMinutes); Serial.println(strSeconds);
+        rtc.setHours(strHours.toInt());
+        rtc.setMinutes(strMinutes.toInt());
+        rtc.setSeconds(strSeconds.toInt()); 
+    }
+    
+    else if (strRespond=="D"){
+    //Set WCC Date & send out via MULTICAST
+        String strDate = strInput.substring(1,7);
+        Serial.println(strDate);
+        String strDay="";
+        String strMonth="";
+        String strYear="";
+        strDay = strInput.substring(1,3);
+        strMonth = strInput.substring(3,5);
+        strYear = strInput.substring(5,7);
+        Serial.print("Date values to be changed to:"); Serial.print(strDay); Serial.print(strMonth); Serial.println(strYear);
+        rtc.setDay(strDay.toInt());
+        rtc.setMonth(strMonth.toInt());
+        rtc.setYear(strYear.toInt());
+    }
+    else Serial.flush(); 
+    
+  } //end keyboard
+
+
+  //if timeout?
+  //Send time and date as MULTICAST
+    unsigned long currentMillis = millis();
+ 
+    if(currentMillis - previousMillis > interval) {
+      // save the last time this happened
+      previousMillis = currentMillis;   
+      Serial.print(".");
+      // action - send updated clock time
+      LoRa.beginPacket();
+      LoRa.print("99999");
+      hours = "";
+      hours.concat(rtc.getHours());
+      if (hours.length()<2) hours='0' + hours;
+      minutes = "";
+      minutes.concat(rtc.getMinutes());
+      if (minutes.length()<2) minutes = '0' + minutes; 
+      seconds = "";
+      seconds.concat(rtc.getSeconds());
+      if (seconds.length()<2) seconds='0' + seconds;
+      LoRa.print("T");
+      LoRa.print(hours);
+      LoRa.print(minutes);
+      LoRa.print(seconds);
+      LoRa.print("X");
+      LoRa.endPacket();
+      //Serial.println("Time-update LoRa packet sent.");
+      //Serial.print("      System time is:"); Serial.print(rtc.getHours()); Serial.print(":");Serial.print(rtc.getMinutes());Serial.print(":"); Serial.println(rtc.getSeconds());
+
+      // action - send updated date information (could be far less frequently
+      LoRa.beginPacket();
+      LoRa.print("99999");
+      Year = "";
+      Year.concat(rtc.getYear());
+      if (Year.length()<2) Year='0' + Year; 
+      Month = "";
+      Month.concat(rtc.getMonth());
+      if (Month.length()<2) Month = '0' + Month;
+      Day = "";
+      Day.concat(rtc.getDay());
+      if (Day.length()<2) Day='0' + Day;
+      LoRa.print("D");
+      LoRa.print(Day);
+      LoRa.print(Month);
+      LoRa.print(Year);
+      LoRa.print("X");
+      LoRa.endPacket();
+      //Serial.println("Date-update LoRa packet sent.");
+      //Serial.print("      System date is:"); Serial.print(rtc.getDay()); Serial.print(":");Serial.print(rtc.getMonth());Serial.print(":"); Serial.println(rtc.getYear());
+    
+    }// if timed out
+
+ 
+
+ 
+
+}
