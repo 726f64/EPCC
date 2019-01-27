@@ -1,0 +1,644 @@
+/*############################################################
+  Elderly Person in the Community Care - EPCC_Console
+                      December 2018
+  
+       Home Console Unit Code for Arduino MKR WAN 1300
+  
+                        by 14rhb
+  
+        for Element14 Community Smarter World Project
+############################################################*/
+
+//#include <Adafruit_NeoPixel.h>
+#include <LoRa.h> 
+#include<stdio.h>
+#include <Wire.h>
+#include <hd44780.h>
+#include <hd44780ioClass/hd44780_I2Cexp.h>
+#include <RTCZero.h>
+
+volatile byte flags = 0;
+#define flagLORA    0      //1=Good, 0=No connection
+#define flagOK      1      //0=Bad, 1=OK
+#define flagAssist  2      //0=Not required, 1=Call made for assistance
+#define flagSOS     3      //0=Not required, 1=SOS Call
+#define flagPIR     4      //0=No movement, 1=Movement
+#define flagAssistLogged 5  //0=not logged, 1=logged
+#define flagSOSLogged 6  //0=not logged, 1=logged
+#define flagTxNeeded 7  //0=OK, 1=LORA tx is reqyured to WCC
+
+volatile byte flags2 = 1;
+#define flagToggleLEDs 0    //0=OK, 1=time out so toggle LEDs (and reset)
+
+#define defaultLORAtmr 100;
+#define defaultLEDtmr 10;
+
+// LCD sizes...
+const int LCD_COLS = 20;
+const int LCD_ROWS = 4;
+
+hd44780_I2Cexp lcd; // my lcd object.
+RTCZero rtc;
+
+String stringOne = "45678";
+String stringMulticast= "99999"; 
+String stringVersion = "2.14";
+String strTemp;
+
+struct xx2
+{
+    int xx;
+};
+
+struct xx2 my[10];
+struct xx2 my1 = {50};
+
+
+const byte ledGreen = 2;
+const byte ledYellow = 3;
+const byte ledRed = 5;
+
+const byte switchOK = 0;
+const byte switchAssist = 1;
+const byte switchSOS = 4;
+const byte switchPIR = 6;
+
+/* Change these values to set the current initial time */
+const byte seconds = 0;
+const byte minutes = 0;
+const byte hours = 0;
+
+/* Change these values to set the current initial date */
+const byte day = 1;
+const byte month = 1;
+const byte year = 1;
+
+
+
+volatile byte stateGreen = LOW;
+volatile byte stateYellow= LOW;
+volatile byte stateRed = LOW;
+
+int roomTempC;
+int roomTempF;
+
+int tmrLORAtx=defaultLORAtmr;
+int tmrLED = defaultLEDtmr;
+
+void setup() {
+  
+  Serial.begin(115200);
+  if(!Serial){
+  }
+  
+  bitSet(flags,flagOK);     //all others were cleared as default
+  digitalWrite(ledGreen, stateGreen);
+  
+  pinMode(ledGreen, OUTPUT);
+  pinMode(ledYellow, OUTPUT);
+  pinMode(ledRed, OUTPUT);
+  
+  pinMode(switchOK, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(switchOK), isrOK, FALLING);
+
+  pinMode(switchAssist, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(switchAssist), isrAssist, FALLING);
+  
+  pinMode(switchSOS, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(switchSOS), isrSOS, FALLING);
+  
+  pinMode(switchPIR, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(switchPIR), isrPIR, FALLING);
+  
+  Serial.print("Elderly Person in the Community Care - Console ID:");
+  Serial.print(stringOne);
+  Serial.print(" SW:v");
+  Serial.println(stringVersion);
+  
+  if (!LoRa.begin(868E6)) {  
+    bitSet(flags,flagLORA);
+    Serial.println("Failed to connect"); 
+  } 
+  
+  Serial.println("LCD-1");
+  
+  //LCD Setup
+  int status;
+  status = lcd.begin(LCD_COLS, LCD_ROWS);
+  Serial.println("LCD-2");
+  
+  if(status)
+  {
+    status = -status;
+    Serial.println("Failed");
+    //hd44780::fatalError(status); // deadend
+  }
+    
+  rtc.begin();
+  rtc.setTime(hours, minutes, seconds);
+  rtc.setDate(day, month, year);
+  
+  Serial.print(rtc.getDay());Serial.print(" : ");Serial.print(rtc.getMonth());Serial.print(" : ");Serial.println(rtc.getYear());
+  Serial.print(rtc.getHours());Serial.print(":");Serial.print(rtc.getMinutes());Serial.print(":");Serial.println(rtc.getSeconds());
+}
+
+// #######################################################################
+void loop() {
+  //while (!Serial) ;
+  
+  //Startup Flash LEDs
+  splashLED();
+  splashLCD();
+  
+  testNetwork();
+  
+  //The Main Loop of the Console Unit
+  while(1){
+    
+    Serial.print("."); 
+    loraRx();    //test to see if the WCC has sent anything, and interpret it accordingly
+    bluMessage();     //test to see if the wearable unit has sent anything via the MKR1010 BLU
+    gatherEnv();      //get environmental data for the console   
+    //check flags??  
+    //check time??  
+    updateVisuals();  
+    //logic?? 
+    loraTx(); 
+    adjustTimers();     //this should be the only function that has a sizeable delay, all others should be in and out! 
+    //random delay to stop collisions when multiple consoldes are active ?
+    
+  }
+
+}
+
+// #######################################################################
+//To flash the LEDs on initial powerup of the board
+void splashLED(){
+  for (int count=0; count<4;count++){
+    delay(200);
+    stateGreen=!stateGreen;
+    stateRed=!stateRed;
+    stateYellow=!stateYellow;
+    digitalWrite(ledGreen, stateGreen);
+    digitalWrite(ledYellow, stateYellow);
+    digitalWrite(ledRed, stateRed);
+  }
+  //defaults
+  stateGreen=HIGH;
+  stateRed=LOW;
+  stateYellow=LOW;  
+  digitalWrite(ledGreen, stateGreen);
+  digitalWrite(ledYellow, stateYellow);
+  digitalWrite(ledRed, stateRed);
+  
+  return;
+}
+
+// #######################################################################
+//To set a welcome message on the LCD display - and then display time etc?
+void splashLCD(){
+
+String stringMessage;
+
+  lcd.setCursor(0,0);
+  lcd.print("    EPCC - v2.14");
+  lcd.setCursor(0,1);
+  stringMessage="    User:" + stringOne;
+  lcd.print(stringMessage); 
+  delay(2000); 
+  return;
+}
+
+// #######################################################################
+//Test the network back to the WCC and display result accordingly - and set flags
+void testNetwork(){
+  return;
+}
+
+// #######################################################################
+//Test to see if any LORA messages have been received and action them accordingly
+void loraRx(){
+  
+  int packetRxLen = LoRa.parsePacket();  
+  char rxString[50];
+  int pos=0;
+  int iHours; int iMinutes; int iSeconds;
+  byte iYear; byte iMonth; byte iDay;
+  
+  if (packetRxLen>0) {  
+    // something was Rx from the WCC....
+    while (LoRa.available()) {  
+      char incoming = (char) LoRa.read();  
+      //Serial.print(incoming); 
+      rxString[pos]=incoming;
+      pos++;
+    }  
+    
+    Serial.println();Serial.print("Message received: ");Serial.print(rxString);Serial.println("$");
+    
+
+    //****************************************************************************************************************************************
+    //was this for this console? Check ID?
+    unsigned int lenID=stringOne.length();
+    //try and hang onto the rxString without corrupting it => make it an actual string class called stringRx
+    String stringRx((const __FlashStringHelper*) rxString);
+    String stringRx5((const __FlashStringHelper*) rxString);
+    stringRx5.remove(5);
+    //Serial.print("Strings are:");Serial.print(stringOne);Serial.print(" and ");Serial.print(stringRx5);Serial.println("#");
+    
+    stringRx5.substring(0,lenID);
+    int result=stringOne.compareTo(stringRx5);
+    //Serial.println(result);
+    if (result==0){
+      //was specifically for this console, but what message and how to action....UNICAST
+      Serial.print("*** UNICAST Pkt Rx");Serial.println(stringRx);
+      strTemp = stringRx.substring(5,6);
+      if (strTemp.compareTo("a")==0){
+        //WCC acknowledges my ASSIST call....flash yellow LED
+        bitSet(flags,flagAssistLogged);
+        Serial.println("    Assist acknowledged");
+      }//if 'a'
+
+      if (strTemp.compareTo("A")==0){
+        //WCC clears my ASSIST call....set back to green
+        bitClear(flags,flagAssistLogged);
+        bitClear(flags,flagAssistLogged);
+        bitClear(flags,flagAssist) ;
+        bitClear(flags,flagSOS);
+        bitSet(flags,flagOK);
+        bitClear(flags2,flagToggleLEDs);
+        Serial.println("    Assist cleared");  
+      }//if 'A'
+
+      if (strTemp.compareTo("s")==0){
+        //WCC acknowledges my SOS call....flash red LED
+        bitSet(flags,flagSOSLogged);
+        Serial.println("    SOS acknowledged");
+      }//if 's'
+
+      if (strTemp.compareTo("S")==0){
+        //WCC clears my SOS call....clear red LED and back to green?
+        bitClear(flags,flagAssistLogged);
+        bitClear(flags,flagAssistLogged);
+        bitClear(flags,flagAssist); 
+        bitClear(flags,flagSOS);
+        bitSet(flags,flagOK); 
+        bitClear(flags2,flagToggleLEDs);
+        Serial.println("    SOS cleared");
+      }//if 'S'
+
+      //update display?
+      
+    }
+
+
+    
+    //****************************************************************************************************************************************
+    result=stringMulticast.compareTo(stringRx5);    //are first 5 bytes '99999'? e.g. MULTICAST tx looks like 99999T230705X
+    //Serial.println(result);
+    if (result==0){   
+      String stringRx((const __FlashStringHelper*) rxString);
+      Serial.print("MULTICAST Pkt Rx - setting ");
+
+      strTemp=stringRx.substring(5,6);
+      
+      if (strTemp.compareTo("T")==0){
+        //SET TIME
+        Serial.print("the time:");
+        strTemp = stringRx.substring(6,8);
+        iHours=strTemp.toInt();
+        rtc.setHours(iHours);  
+        strTemp = stringRx.substring(8,10);
+        iMinutes=strTemp.toInt();
+        rtc.setMinutes(iMinutes);    
+        strTemp = stringRx.substring(10,12);
+        iSeconds=strTemp.toInt();
+        rtc.setSeconds(iSeconds); 
+        Serial.print(iHours); Serial.print(":");Serial.print(iMinutes); Serial.print(":");Serial.println(iSeconds); 
+      }
+      
+      //99999D121209Xx
+      else if (strTemp.compareTo("D")==0){
+        //SET DATE
+        Serial.print("the date:");
+        strTemp = stringRx.substring(10,12);
+        iYear=strTemp.toInt();
+        iYear=iYear;
+        rtc.setYear(iYear);  
+        strTemp = stringRx.substring(8,10);
+        iMonth=strTemp.toInt();
+        rtc.setMonth(iMonth);    
+        strTemp = stringRx.substring(6,8);
+        iDay=strTemp.toInt();
+        rtc.setDay(iDay); 
+        Serial.print(iDay); Serial.print(":");Serial.print(iMonth); Serial.print(":");Serial.println(iYear);        
+      }//else if
+      
+    }
+    
+    
+  }
+  return;
+}
+
+// #######################################################################
+//Test to see if the MKR1010 has received any BLU messages from the wearable component of this project
+void bluMessage(){
+  
+  //if message then update flags and variables to reflect the wearable data received
+  
+  return;
+}
+
+// #######################################################################
+//Get the environmental data that surrounds this project
+void gatherEnv(){
+  //read temperature sensor and adjust to degrees centigrade
+  
+  int byteHigh;
+  int byteLow;
+  
+  Wire.requestFrom(0x48, 2);
+  while(Wire.available())
+  {
+    byteHigh = Wire.read();
+    byteLow = Wire.read();      
+    //Serial.print("temperature = ");Serial.print(byteHigh);Serial.print(":");Serial.println(byteLow);
+  }
+
+  roomTempC=byteHigh;  
+  
+  //PIR timer period? vs. time of day?
+  return;
+}
+
+// #######################################################################
+//If the time period is up send a general lora Tx packet back to the WCC - all data etc
+void loraTx(){
+  //Serial.println("Lora Tx?");
+  if (bitRead(flags,flagTxNeeded)){
+    Serial.println();Serial.print("Lora Tx Packet Sent:");Serial.print(stringOne);Serial.print("/");
+    Serial.print(roomTempC);Serial.print("/");
+    Serial.print(stateGreen);Serial.print("/");Serial.print(stateYellow);Serial.print("/");Serial.println(stateRed);
+    bitClear(flags,flagTxNeeded);       //clear as it is about to be actioned
+    //Is connection OK?
+    if (bitSet(flags,flagLORA)){
+      //data should already be available in the registers and flags
+      LoRa.beginPacket();  
+      LoRa.print("EPCC_Console: ");  
+      LoRa.print(stringOne);LoRa.print('/');
+      LoRa.print(roomTempC);LoRa.print('/');
+      if (bitRead(flags,flagOK)) LoRa.print('1');
+      else LoRa.print('0');
+      LoRa.print('/');
+      if (bitRead(flags,flagAssist)) LoRa.print('1');
+      else LoRa.print('0');
+      LoRa.print('/');
+      if (bitRead(flags,flagSOS)) LoRa.print('1');
+      else LoRa.print('0');
+      LoRa.print('/');
+      
+      //tx time since last PIR?
+      //tx data from Wearable device to WCC?
+      LoRa.endPacket(); 
+    }
+  tmrLORAtx=defaultLORAtmr;
+  }
+  
+  return;
+}
+
+// #######################################################################
+//Interrupt Service Routine for OK Button - force the others clear - just in case
+void isrOK(){
+  if ((!bitRead(flags,flagAssist))&&(!bitRead(flags,flagSOS))){
+    bitSet(flags,flagOK);
+    bitSet(flags,flagTxNeeded);
+  }
+  //bitClear(flags,flagAssist);
+  //bitClear(flags,flagSOS);
+  //only WCC can send signal to clear these when checked with user
+  return;
+}
+
+// #######################################################################
+//Interrupt Service Routine for ASSIST Button - force the others clear - just in case
+void isrAssist(){
+  if ((bitRead(flags,flagOK))&(!bitRead(flags,flagSOS))){
+    bitClear(flags,flagOK);
+    bitSet(flags,flagAssist);
+    bitClear(flags,flagSOS);
+    bitSet(flags,flagTxNeeded);
+  }
+  return;
+}
+
+// #######################################################################
+//Interrupt Service Routine for SOS Button - force the others clear - just in case
+void isrSOS(){
+  
+  bitClear(flags,flagOK);
+  bitClear(flags,flagAssist);
+  bitSet(flags,flagSOS);
+  bitSet(flags,flagTxNeeded);
+  return;
+  
+  //add so as to ignore previous OK from WCC and await new response? (if was Yellow and moves to SOS/Red)
+  
+}
+
+// #######################################################################
+//Interrupt Service Routine for PIR Detection
+void isrPIR(){
+  
+  bitSet(flags,flagPIR);
+  return;
+}
+
+// #######################################################################
+//Update the LCD and LEDs according to the various flags
+void updateVisuals(){
+
+  String stringTime;
+  String stringDate;
+  String strHours;
+  String strMinutes;
+  String strSeconds;
+  String strMonth;
+  String strDay;
+  String strYear;
+  int Temp;
+  String strTemp;
+  String strMod;
+  
+  if (bitRead(flags,flagOK)) {
+    stateGreen=HIGH;
+    stateYellow=LOW;
+    stateRed=LOW;
+  } 
+  
+  //Assist LED will flash if the WCC has actioned the call
+  if (bitRead(flags,flagAssist)) {
+    stateGreen=LOW;
+    stateRed=LOW;
+    if (bitRead(flags,flagAssistLogged)){
+      if (bitRead(flags2,flagToggleLEDs)){
+        stateYellow=!stateYellow;
+        bitClear(flags2,flagToggleLEDs);
+        tmrLED=defaultLEDtmr;
+      }
+    }
+    else stateYellow=HIGH;
+  }
+
+  //SOS LED will flash if WCC has actioned the call  
+  if (bitRead(flags,flagSOS)) {
+    stateGreen=LOW;
+    stateYellow=LOW;
+    if (bitRead(flags,flagSOSLogged)){
+      if (bitRead(flags2,flagToggleLEDs)){
+        stateRed=!stateRed;
+        bitClear(flags2,flagToggleLEDs);
+        tmrLED=defaultLEDtmr;
+      }
+    }
+    else stateRed=HIGH;
+  }  
+
+  digitalWrite(ledGreen, stateGreen);
+  digitalWrite(ledYellow, stateYellow);
+  digitalWrite(ledRed, stateRed);
+  
+  //Update date
+  lcd.setCursor(0,0);
+  Temp=rtc.getMonth();
+  switch(Temp) {
+   case 1:
+      strMonth="Jan";
+      break;
+   case 2:
+      strMonth="Feb";
+      break;
+   case 3:
+      strMonth="Mar";
+      break;
+   case 4:
+      strMonth="Apr";
+      break;
+  case 5:
+      strMonth="May";
+      break;
+   case 6:
+      strMonth="Jun";
+      break;
+   case 7:
+      strMonth="Jly";
+      break;
+   case 8:
+      strMonth="Aug";
+      break;
+   case 9:
+      strMonth="Sep";
+      break;
+   case 10:
+      strMonth="Oct";
+      break;
+  case 11:
+      strMonth="Nov";
+      break;
+   case 12:
+      strMonth="Dec";
+      break;
+
+   default : /* Optional */
+   strMonth="---";
+}
+
+  Temp = rtc.getDay();
+  switch(Temp) {
+   case 1:
+      strMod="st";
+      break;
+   case 2:
+      strMod="nd";
+      break;
+   case 3:
+      strMod="rd";
+      break;
+   case 21:
+      strMod="st";
+      break;
+   case 22:
+      strMod="nd";
+      break;
+   case 23:
+      strMod="rd";
+      break; 
+   case 31:
+      strMod="st";
+      break;       
+   default : /* Optional */
+   strMod="th";
+}
+  strTemp=rtc.getYear();
+  Temp=rtc.getYear();
+  strYear="20";
+  if (Temp<10) strYear.concat("0");
+  strYear.concat(strTemp);
+
+  strDay=rtc.getDay();
+  stringDate="";
+  stringDate="   " + strDay + strMod + " " + strMonth + " " + strYear + "  ";
+  lcd.print(stringDate);
+  //Serial.print("Value sent to LCD is:"); Serial.println(stringDate);  
+  
+  lcd.setCursor(0,1);
+  strHours = rtc.getHours();
+  Temp=rtc.getSeconds();
+  if (Temp>9) strTemp="";
+  else strTemp="0";
+  strSeconds=strTemp + rtc.getSeconds();
+  Temp=rtc.getMinutes(); 
+  if (Temp>9) strTemp="";
+  else strTemp="0";
+  strMinutes=strTemp + rtc.getMinutes();
+   
+  stringTime="      " + strHours +":" + strMinutes + ":" + strSeconds + "  ";
+  lcd.print(stringTime); 
+
+  lcd.setCursor(0,2);
+  strTemp="";
+  strTemp=roomTempC;
+  strTemp="   Temperature: " +strTemp;
+  lcd.print(strTemp);
+  
+  return;
+}
+
+// ####################################################################### 
+//Adjust the timers and set flags appropriately if timed out  
+void adjustTimers(){
+
+  //timers for LORA Tx burst due
+  //Serial.println(tmrLORAtx);
+  if (tmrLORAtx==0){
+    bitSet(flags,flagTxNeeded);
+    //Serial.println("LORA Tx Due");
+  }
+  else tmrLORAtx--;
+  
+  
+  //timers for LED toggle
+  //Serial.print("LED:");Serial.println(tmrLED);
+  if (tmrLED==0){
+    bitSet(flags2,flagToggleLEDs);
+
+  }
+  else tmrLED--;  
+
+  delay(10);
+  
+  //timer for PIR motion activity or lack of activity
+  
+}
+  
